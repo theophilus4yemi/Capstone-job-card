@@ -1,0 +1,9 @@
+{
+  "name": "Capstone Vehicles — Job Card",
+  "short_name": "Job Card",
+  "start_url": "./index.html",
+  "display": "standalone",
+  "background_color": "#EFF3F6",
+  "theme_color": "#1B2A41",
+  "icons": []
+}

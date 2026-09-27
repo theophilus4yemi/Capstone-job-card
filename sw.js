@@ -1,11 +1,10 @@
 // Capstone Vehicles — Job Card: offline app-shell cache
-var CACHE = 'jobcard-shell-v1';
+var CACHE = 'jobcard-shell-v2';
 var SHELL = [
   './',
   './index.html',
   './manifest.json',
-  'https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js',
-  'https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js'
+  'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2'
 ];
 
 self.addEventListener('install', function(evt){

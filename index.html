@@ -9,9 +9,8 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap" rel="stylesheet">
-<!-- Firebase (compat SDK — simplest to wire up, same API shape used below) -->
-<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-app-compat.js"></script>
-<script src="https://www.gstatic.com/firebasejs/10.13.0/firebase-firestore-compat.js"></script>
+<!-- Supabase JS client -->
+<script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
 <style>
   :root{
     --paper:#EFF3F6; --panel:#FFFFFF; --ink:#1B2A41; --ink-muted:#5C6B7A;
@@ -447,16 +446,18 @@
     location.reload();
   });
 
-  // ---------- cloud (db capability) ----------
+  // ---------- cloud (Supabase) ----------
   var dbNS = null;
   var fieldGetters = {custName:1,custPhone:1,vehReg:1,vehModel:1,vehOdo:1,vehFuel:1,complaint:1};
+  // Postgres folds unquoted identifiers to lowercase, so the table's columns are lowercase.
+  var COLMAP = {custName:'custname', custPhone:'custphone', vehReg:'vehreg', vehModel:'vehmodel', vehOdo:'vehodo', vehFuel:'vehfuel', complaint:'complaint'};
 
   function collectData(){
-    var d = { markers: state.markers, jobs: state.jobs, updatedAt: new Date().toISOString(),
+    var d = { id: state.id, markers: state.markers, jobs: state.jobs, updatedat: new Date().toISOString(),
       stamp: document.getElementById('jcStamp').textContent, total: document.getElementById('grandTotal').textContent };
-    Object.keys(fieldGetters).forEach(function(id){ d[id] = document.getElementById(id).value; });
-    try{ d.sigCustomer = document.getElementById('sigCustomer').toDataURL(); }catch(e){}
-    try{ d.sigTech = document.getElementById('sigTech').toDataURL(); }catch(e){}
+    Object.keys(fieldGetters).forEach(function(id){ d[COLMAP[id]] = document.getElementById(id).value; });
+    try{ d.sigcustomer = document.getElementById('sigCustomer').toDataURL(); }catch(e){}
+    try{ d.sigtech = document.getElementById('sigTech').toDataURL(); }catch(e){}
     return d;
   }
 
@@ -474,11 +475,11 @@
     state.id = id;
     state.markers = d.markers || [];
     state.jobs = (d.jobs && d.jobs.length) ? d.jobs : [{desc:'',hrs:'',rate:'',parts:''}];
-    Object.keys(fieldGetters).forEach(function(fid){ document.getElementById(fid).value = d[fid] || ''; });
+    Object.keys(fieldGetters).forEach(function(fid){ document.getElementById(fid).value = d[COLMAP[fid]] || ''; });
     document.getElementById('jcStamp').textContent = d.stamp || 'JC-' + id.slice(0,4).toUpperCase();
     renderMarkers(); renderJobs(); recalc();
-    drawSigFromData('sigCustomer', d.sigCustomer);
-    drawSigFromData('sigTech', d.sigTech);
+    drawSigFromData('sigCustomer', d.sigcustomer);
+    drawSigFromData('sigTech', d.sigtech);
     save();
     activateTab('intake');
   }
@@ -498,14 +499,16 @@
 
   async function saveToCloud(){
     var btn = document.getElementById('saveBtn');
-    if(!dbNS){ alert('Cloud save is unavailable — check the Firebase config near the bottom of the file.'); return; }
+    if(!dbNS){ alert('Cloud save is unavailable — check the Supabase config near the bottom of the file.'); return; }
     btn.textContent = 'Saving…'; btn.disabled = true;
     try{
-      await dbNS.collection('jobcards').doc(state.id).set(collectData());
-      btn.textContent = navigator.onLine ? 'Saved ✓' : 'Saved offline ✓';
+      var res = await dbNS.from('jobcards').upsert(collectData());
+      if(res.error) throw res.error;
+      btn.textContent = 'Saved ✓';
+      refreshList();
     }catch(e){
       btn.textContent = 'Save';
-      alert('Could not save: ' + (e && e.message ? e.message : 'please try again'));
+      alert('Could not save: ' + (e && e.message ? e.message : 'check your connection and try again'));
     }
     setTimeout(function(){ btn.textContent = 'Save'; btn.disabled = false; }, 1400);
   }
@@ -515,9 +518,9 @@
   function updateNetStatus(){
     var el = document.getElementById('netStatus');
     if(navigator.onLine){ el.textContent = '● online'; el.style.color = 'var(--good)'; }
-    else{ el.textContent = '● offline — saving locally, will sync later'; el.style.color = 'var(--accent)'; }
+    else{ el.textContent = '● offline — saving locally only until reconnected'; el.style.color = 'var(--accent)'; }
   }
-  window.addEventListener('online', updateNetStatus);
+  window.addEventListener('online', function(){ updateNetStatus(); refreshList(); });
   window.addEventListener('offline', updateNetStatus);
   updateNetStatus();
 
@@ -528,55 +531,51 @@
     });
   }
 
-  function subscribeList(){
-    dbNS.collection('jobcards').orderBy('updatedAt','desc').limit(50).onSnapshot(function(snap){
-      var box = document.getElementById('savedList');
+  // Supabase's JS client doesn't do live listeners the way Firestore's onSnapshot does
+  // (that needs realtime replication turned on in the dashboard), so this refetches the
+  // list on load, after every save, and whenever the "Saved" tab is opened.
+  async function refreshList(){
+    if(!dbNS) return;
+    var box = document.getElementById('savedList');
+    try{
+      var res = await dbNS.from('jobcards').select('*').order('updatedat', { ascending: false }).limit(50);
+      if(res.error) throw res.error;
+      var rows = res.data || [];
       box.innerHTML = '';
-      if(snap.empty){ box.innerHTML = '<p class="hint">No saved job cards yet. Fill one in and tap Save.</p>'; return; }
-      snap.docs.forEach(function(docSnap){
-        var d = docSnap.data();
+      if(rows.length === 0){ box.innerHTML = '<p class="hint">No saved job cards yet. Fill one in and tap Save.</p>'; return; }
+      rows.forEach(function(d){
         var row = document.createElement('div'); row.className = 'saved-row';
         var info = document.createElement('div');
-        var strong = document.createElement('b'); strong.textContent = d.custName || 'Unnamed customer';
+        var strong = document.createElement('b'); strong.textContent = d.custname || 'Unnamed customer';
         var sub = document.createElement('div'); sub.className = 'hint';
-        sub.textContent = (d.vehReg || 'no reg') + ' · ' + (d.total || '$0.00');
+        sub.textContent = (d.vehreg || 'no reg') + ' · ' + (d.total || '$0.00');
         info.appendChild(strong); info.appendChild(sub);
         var open = document.createElement('button'); open.className = 'btn ghost small'; open.textContent = 'Open';
-        open.addEventListener('click', function(){ loadData(d, docSnap.id); });
+        open.addEventListener('click', function(){ loadData(d, d.id); });
         row.appendChild(info); row.appendChild(open);
         box.appendChild(row);
       });
-    }, function(err){
-      document.getElementById('savedList').innerHTML = '<p class="hint">Could not load saved cards (' + err.code + ').</p>';
-    });
+    }catch(e){
+      box.innerHTML = '<p class="hint">Could not load saved cards (' + (e.message || 'connection issue') + ').</p>';
+    }
   }
+  document.querySelector('[data-tab="saved"]').addEventListener('click', refreshList);
 
   (function initDb(){
-    // ---- Paste your Firebase project config here (Firebase console → Project settings → your web app) ----
-    var firebaseConfig = {
-      apiKey: "AIzaSyBlFL-6V4T3jFMfCz1uPFEC-QqLOzyIKhw",
-      authDomain: "capstone-vehicle.firebaseapp.com",
-      projectId: "capstone-vehicle",
-      storageBucket: "capstone-vehicle.firebasestorage.app",
-      messagingSenderId: "390710495663",
-      appId: "1:390710495663:web:43575523ac42f9f42c875a"
-    };
-    if(firebaseConfig.apiKey === "YOUR_API_KEY"){
+    // ---- Paste your Supabase project URL and anon public key here (Project settings → API) ----
+    var supabaseUrl = "https://ohdlftdaodoogwmfmsgx.supabase.co";
+    var supabaseKey = "sb_publishable_L2j4hyf_CKJS2JRGDKFnNA_KU4_eKOE";
+    if(supabaseUrl === "YOUR_SUPABASE_URL"){
       document.getElementById('dbBanner').textContent =
-        'Cloud save is not configured yet — paste your Firebase config into the script near the bottom of this file. Saving locally to this browser for now.';
+        'Cloud save is not configured yet — paste your Supabase URL and key into the script near the bottom of this file. Saving locally to this browser for now.';
       document.getElementById('dbBanner').style.display = 'block';
       return;
     }
     try{
-      firebase.initializeApp(firebaseConfig);
-      dbNS = firebase.firestore();
-      dbNS.enablePersistence({ synchronizeTabs: true }).catch(function(e){
-        // multiple tabs open, or an old browser — app still works, just without offline cache
-        console.warn('Offline persistence not enabled:', e.code);
-      });
-      subscribeList();
+      dbNS = supabase.createClient(supabaseUrl, supabaseKey);
+      refreshList();
     }catch(e){
-      document.getElementById('dbBanner').textContent = 'Could not connect to Firebase: ' + e.message;
+      document.getElementById('dbBanner').textContent = 'Could not connect to Supabase: ' + e.message;
       document.getElementById('dbBanner').style.display = 'block';
     }
   })();
